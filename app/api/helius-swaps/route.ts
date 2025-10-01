@@ -29,6 +29,7 @@ function isValidSolanaAddress(address: string): boolean {
  * Query Parameters:
  * - wallet (required): Solana wallet address to fetch transactions for
  * - signatures (optional): Comma-separated transaction signatures to fetch via RPC fallback
+ * - detectGaps (optional): Enable automatic gap detection ('true' or 'false', default: 'false')
  *
  * Response Format:
  * {
@@ -54,6 +55,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const walletAddress = searchParams.get('wallet');
     const signaturesParam = searchParams.get('signatures');
+    const detectGapsParam = searchParams.get('detectGaps');
 
     // Validate wallet parameter presence
     if (!walletAddress) {
@@ -86,13 +88,21 @@ export async function GET(request: NextRequest) {
       ? signaturesParam.split(',').map(s => s.trim()).filter(s => s.length > 0)
       : undefined;
 
+    // Parse gap detection flag
+    const enableGapDetection = detectGapsParam?.toLowerCase() === 'true';
+
     if (specificSignatures && specificSignatures.length > 0) {
       console.log(`[api/helius-swaps] RPC fallback requested for ${specificSignatures.length} signatures`);
+    }
+
+    if (enableGapDetection) {
+      console.log(`[api/helius-swaps] Gap detection enabled`);
     }
 
     // Process all transactions for the wallet (with optional RPC fallback)
     const result = await processAllTransactions(walletAddress, {
       specificSignatures,
+      enableGapDetection,
     });
 
     console.log(`[api/helius-swaps] Successfully processed ${result.activities.length} activities`);

@@ -27,6 +27,7 @@ import {
 } from './helius';
 import {
   fetchTransactionsBatch,
+  detectMissingSignatures,
 } from './rpc-parser';
 
 // ============================================================================
@@ -540,7 +541,8 @@ export function reclassifyTransactionTypes(activities: DeFiActivity[]): DeFiActi
  */
 interface RpcFallbackOptions {
   specificSignatures?: string[];  // User-provided signatures to fetch via RPC
-  enableGapDetection?: boolean;   // Enable automatic gap detection (future)
+  enableGapDetection?: boolean;   // Enable automatic gap detection
+  maxGapDetectionLimit?: number;  // Max signatures to check for gaps (default: 1000)
 }
 
 /**
@@ -566,11 +568,47 @@ export async function processAllTransactions(
   const enhancedTransactions = await fetchAllSwapTransactionsWithRetry(walletAddress);
   console.log(`[transactions] Fetched ${enhancedTransactions.length} transactions from Enhanced API`);
 
-  // Step 2: Fetch additional transactions via RPC if requested
+  // Step 2: Detect missing signatures if gap detection is enabled
+  let missingSignatures: string[] = [];
+
+  if (options?.enableGapDetection) {
+    console.log('[transactions] Step 2a: Detecting missing signatures...');
+    const enhancedSignatures = enhancedTransactions.map(tx => tx.signature);
+    const maxLimit = options.maxGapDetectionLimit || 1000;
+
+    missingSignatures = await detectMissingSignatures(
+      walletAddress,
+      enhancedSignatures,
+      maxLimit
+    );
+
+    console.log(`[transactions] Detected ${missingSignatures.length} potentially missing signatures`);
+  }
+
+  // Step 3: Combine user-provided signatures with detected missing ones
+  const signaturesToFetch = [
+    ...(options?.specificSignatures || []),
+    ...missingSignatures,
+  ];
+
+  // Remove duplicates
+  const uniqueSignatures = Array.from(new Set(signaturesToFetch));
+
+  // Step 4: Fetch additional transactions via RPC (with safety limit)
   let rpcTransactions: HeliusTransaction[] = [];
-  if (options?.specificSignatures && options.specificSignatures.length > 0) {
-    console.log(`[transactions] Step 2: Fetching ${options.specificSignatures.length} specific signatures via RPC fallback...`);
-    rpcTransactions = await fetchTransactionsBatch(options.specificSignatures, walletAddress);
+  const MAX_RPC_BATCH_SIZE = 50; // Safety limit to prevent timeouts
+
+  if (uniqueSignatures.length > 0) {
+    const signaturesToProcess = uniqueSignatures.slice(0, MAX_RPC_BATCH_SIZE);
+
+    if (uniqueSignatures.length > MAX_RPC_BATCH_SIZE) {
+      console.warn(
+        `[transactions] Limited RPC batch to ${MAX_RPC_BATCH_SIZE} signatures (${uniqueSignatures.length} detected)`
+      );
+    }
+
+    console.log(`[transactions] Step 2b: Fetching ${signaturesToProcess.length} signatures via RPC fallback...`);
+    rpcTransactions = await fetchTransactionsBatch(signaturesToProcess, walletAddress);
     console.log(`[transactions] Fetched ${rpcTransactions.length} transactions via RPC`);
   }
 

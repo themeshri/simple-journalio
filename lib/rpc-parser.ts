@@ -248,8 +248,9 @@ function extractTokenTransfers(
       continue;
     }
 
-    const preAmount = parseFloat(preBalance.uiTokenAmount.amount);
-    const postAmount = parseFloat(postBalance.uiTokenAmount.amount);
+    // Use uiAmount (decimal-adjusted) instead of amount (raw)
+    const preAmount = preBalance.uiTokenAmount.uiAmount || 0;
+    const postAmount = postBalance.uiTokenAmount.uiAmount || 0;
     const change = postAmount - preAmount;
 
     // Skip if no change
@@ -264,7 +265,7 @@ function extractTokenTransfers(
     const isWalletAccount = walletAddress && owner.toLowerCase() === walletAddress.toLowerCase();
 
     if (change > 0) {
-      // Incoming transfer
+      // Incoming transfer (already decimal-adjusted)
       transfers.push({
         mint: postBalance.mint,
         tokenAmount: Math.abs(change),
@@ -274,7 +275,7 @@ function extractTokenTransfers(
         decimals: postBalance.uiTokenAmount.decimals,
       });
     } else {
-      // Outgoing transfer
+      // Outgoing transfer (already decimal-adjusted)
       transfers.push({
         mint: postBalance.mint,
         tokenAmount: Math.abs(change),
@@ -363,6 +364,96 @@ function extractNativeTransfers(
   }
 
   return transfers;
+}
+
+// ============================================================================
+// Signature Discovery
+// ============================================================================
+
+/**
+ * Fetch all transaction signatures for a wallet using RPC
+ * This is faster than fetching full transactions - just gets signatures
+ *
+ * @param walletAddress - Wallet address to get signatures for
+ * @param limit - Maximum signatures to fetch (default: 1000)
+ * @returns Array of transaction signatures
+ */
+export async function fetchAllSignaturesForAddress(
+  walletAddress: string,
+  limit: number = 1000
+): Promise<string[]> {
+  const apiKey = getHeliusApiKey();
+  const url = `${HELIUS_RPC_URL}/?api-key=${apiKey}`;
+
+  try {
+    console.log(`[rpc-parser] Fetching signatures for ${walletAddress}...`);
+
+    const response = await axios.post(
+      url,
+      {
+        jsonrpc: '2.0',
+        id: 'get-signatures',
+        method: 'getSignaturesForAddress',
+        params: [
+          walletAddress,
+          {
+            limit,
+            commitment: 'confirmed',
+          },
+        ],
+      },
+      { timeout: REQUEST_TIMEOUT }
+    );
+
+    if (response.data.error) {
+      console.error(`[rpc-parser] RPC error:`, response.data.error);
+      return [];
+    }
+
+    const signatures = response.data.result?.map((item: any) => item.signature) || [];
+    console.log(`[rpc-parser] Found ${signatures.length} total signatures for wallet`);
+
+    return signatures;
+  } catch (error) {
+    console.error(`[rpc-parser] Failed to fetch signatures:`, error);
+    return [];
+  }
+}
+
+/**
+ * Detect missing signatures by comparing Enhanced API results with RPC
+ *
+ * @param walletAddress - Wallet address
+ * @param enhancedSignatures - Signatures from Enhanced API
+ * @param maxToCheck - Maximum signatures to check from RPC (default: 1000)
+ * @returns Array of missing signatures
+ */
+export async function detectMissingSignatures(
+  walletAddress: string,
+  enhancedSignatures: string[],
+  maxToCheck: number = 1000
+): Promise<string[]> {
+  console.log(`[rpc-parser] Detecting missing signatures...`);
+
+  // Get all signatures from RPC
+  const allSignatures = await fetchAllSignaturesForAddress(walletAddress, maxToCheck);
+
+  if (allSignatures.length === 0) {
+    console.log('[rpc-parser] No signatures found from RPC');
+    return [];
+  }
+
+  // Create set of Enhanced API signatures for fast lookup
+  const enhancedSet = new Set(enhancedSignatures);
+
+  // Find signatures that exist in RPC but not in Enhanced API
+  const missingSignatures = allSignatures.filter(sig => !enhancedSet.has(sig));
+
+  console.log(
+    `[rpc-parser] Found ${missingSignatures.length} potentially missing signatures (${allSignatures.length} total - ${enhancedSignatures.length} enhanced)`
+  );
+
+  return missingSignatures;
 }
 
 // ============================================================================

@@ -59,7 +59,7 @@ export default function Home() {
     setActivities([]);
 
     try {
-      const response = await fetch(`/api/helius-swaps?wallet=${encodeURIComponent(trimmedAddress)}`);
+      const response = await fetch(`/api/helius-swaps?wallet=${encodeURIComponent(trimmedAddress)}&detectGaps=true`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
