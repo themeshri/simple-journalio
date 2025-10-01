@@ -21,6 +21,11 @@ export default function Home() {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'table' | 'summary'>('table');
+  const [metadata, setMetadata] = useState<{
+    enhancedApiCount: number;
+    rpcFallbackCount: number;
+    totalCount: number;
+  } | null>(null);
 
   /**
    * Validates Solana wallet address format
@@ -65,6 +70,7 @@ export default function Home() {
 
       if (data.success && data.data) {
         setActivities(data.data || []);
+        setMetadata(data.metadata || null);
 
         // Show message if no transactions found
         if (!data.data || data.data.length === 0) {
@@ -222,6 +228,23 @@ export default function Home() {
         {/* View Toggle and Results */}
         {!loading && activities.length > 0 && (
           <>
+            {/* Metadata Badge (RPC Fallback Indicator) */}
+            {metadata && metadata.rpcFallbackCount > 0 && (
+              <div className="flex justify-center mb-4">
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700 rounded-lg">
+                  <svg className="w-5 h-5 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  <span className="text-sm font-medium text-purple-900 dark:text-purple-100">
+                    Deep Scan Active: {metadata.rpcFallbackCount} transaction{metadata.rpcFallbackCount > 1 ? 's' : ''} found via RPC fallback
+                  </span>
+                  <span className="text-xs text-purple-700 dark:text-purple-300">
+                    ({metadata.totalCount} total)
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* View Mode Toggle */}
             <div className="flex justify-center mb-6">
               <div className="inline-flex rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 p-1 shadow-sm">

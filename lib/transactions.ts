@@ -25,6 +25,43 @@ import {
   filterValidTransactions,
   extractUniqueMints,
 } from './helius';
+import {
+  fetchTransactionsBatch,
+} from './rpc-parser';
+
+// ============================================================================
+// Transaction Merging
+// ============================================================================
+
+/**
+ * Merge transactions from Enhanced API and RPC, removing duplicates
+ *
+ * @param enhancedTransactions - Transactions from Enhanced API
+ * @param rpcTransactions - Transactions from RPC fallback
+ * @returns Merged array with duplicates removed
+ */
+function mergeTransactions(
+  enhancedTransactions: HeliusTransaction[],
+  rpcTransactions: HeliusTransaction[]
+): HeliusTransaction[] {
+  // Create a map of signatures to avoid duplicates
+  const signatureMap = new Map<string, HeliusTransaction>();
+
+  // Add Enhanced API transactions first (they have priority)
+  for (const tx of enhancedTransactions) {
+    signatureMap.set(tx.signature, tx);
+  }
+
+  // Add RPC transactions (only if not already present)
+  for (const tx of rpcTransactions) {
+    if (!signatureMap.has(tx.signature)) {
+      signatureMap.set(tx.signature, tx);
+    }
+  }
+
+  // Convert map back to array
+  return Array.from(signatureMap.values());
+}
 
 // ============================================================================
 // Swap Data Extraction
@@ -498,22 +535,67 @@ export function reclassifyTransactionTypes(activities: DeFiActivity[]): DeFiActi
  * const activities = await processAllTransactions('4NuB8ZFSjEVWE1nJTJ5RBCRmw9VHUE2g8Q5vFza4L8wm');
  * console.log(`Processed ${activities.length} activities`);
  */
+/**
+ * RPC fallback configuration options
+ */
+interface RpcFallbackOptions {
+  specificSignatures?: string[];  // User-provided signatures to fetch via RPC
+  enableGapDetection?: boolean;   // Enable automatic gap detection (future)
+}
+
+/**
+ * Transaction processing result with metadata
+ */
+interface ProcessingResult {
+  activities: DeFiActivity[];
+  metadata: {
+    enhancedApiCount: number;
+    rpcFallbackCount: number;
+    totalCount: number;
+  };
+}
+
 export async function processAllTransactions(
-  walletAddress: string
-): Promise<DeFiActivity[]> {
+  walletAddress: string,
+  options?: RpcFallbackOptions
+): Promise<ProcessingResult> {
   console.log(`[transactions] Starting transaction processing for ${walletAddress}`);
 
-  // Step 1: Fetch all swap transactions
-  console.log('[transactions] Step 1: Fetching swap transactions from Helius...');
-  const rawTransactions = await fetchAllSwapTransactionsWithRetry(walletAddress);
+  // Step 1: Fetch all swap transactions from Enhanced API
+  console.log('[transactions] Step 1: Fetching swap transactions from Helius Enhanced API...');
+  const enhancedTransactions = await fetchAllSwapTransactionsWithRetry(walletAddress);
+  console.log(`[transactions] Fetched ${enhancedTransactions.length} transactions from Enhanced API`);
 
-  if (rawTransactions.length === 0) {
+  // Step 2: Fetch additional transactions via RPC if requested
+  let rpcTransactions: HeliusTransaction[] = [];
+  if (options?.specificSignatures && options.specificSignatures.length > 0) {
+    console.log(`[transactions] Step 2: Fetching ${options.specificSignatures.length} specific signatures via RPC fallback...`);
+    rpcTransactions = await fetchTransactionsBatch(options.specificSignatures, walletAddress);
+    console.log(`[transactions] Fetched ${rpcTransactions.length} transactions via RPC`);
+  }
+
+  // Step 3: Merge transactions (avoiding duplicates)
+  const mergedTransactions = mergeTransactions(enhancedTransactions, rpcTransactions);
+  const enhancedCount = enhancedTransactions.length;
+  const rpcCount = rpcTransactions.length;
+  const totalCount = mergedTransactions.length;
+
+  console.log(`[transactions] Merged transactions: ${totalCount} total (${enhancedCount} Enhanced API + ${rpcCount} RPC, ${enhancedCount + rpcCount - totalCount} duplicates removed)`);
+
+  if (mergedTransactions.length === 0) {
     console.log('[transactions] No swap transactions found');
-    return [];
+    return {
+      activities: [],
+      metadata: {
+        enhancedApiCount: 0,
+        rpcFallbackCount: 0,
+        totalCount: 0,
+      },
+    };
   }
 
   // Filter out invalid transactions
-  const validTransactions = filterValidTransactions(rawTransactions);
+  const validTransactions = filterValidTransactions(mergedTransactions);
   console.log(
     `[transactions] Filtered to ${validTransactions.length} valid transactions`
   );
@@ -558,7 +640,14 @@ export async function processAllTransactions(
     `[transactions] Processing complete: ${reclassifiedActivities.length} activities`
   );
 
-  return reclassifiedActivities;
+  return {
+    activities: reclassifiedActivities,
+    metadata: {
+      enhancedApiCount: enhancedCount,
+      rpcFallbackCount: rpcCount,
+      totalCount: totalCount,
+    },
+  };
 }
 
 /**

@@ -28,6 +28,7 @@ function isValidSolanaAddress(address: string): boolean {
  *
  * Query Parameters:
  * - wallet (required): Solana wallet address to fetch transactions for
+ * - signatures (optional): Comma-separated transaction signatures to fetch via RPC fallback
  *
  * Response Format:
  * {
@@ -35,6 +36,11 @@ function isValidSolanaAddress(address: string): boolean {
  *   data: DeFiActivity[],
  *   total: number,
  *   wallet: string,
+ *   metadata: {
+ *     enhancedApiCount: number,
+ *     rpcFallbackCount: number,
+ *     totalCount: number
+ *   },
  *   message?: string
  * }
  *
@@ -44,9 +50,10 @@ function isValidSolanaAddress(address: string): boolean {
  */
 export async function GET(request: NextRequest) {
   try {
-    // Extract wallet address from query parameters
+    // Extract parameters from query
     const { searchParams } = new URL(request.url);
     const walletAddress = searchParams.get('wallet');
+    const signaturesParam = searchParams.get('signatures');
 
     // Validate wallet parameter presence
     if (!walletAddress) {
@@ -74,21 +81,37 @@ export async function GET(request: NextRequest) {
 
     console.log(`[api/helius-swaps] Processing request for wallet: ${walletAddress}`);
 
-    // Process all transactions for the wallet
-    const activities: DeFiActivity[] = await processAllTransactions(walletAddress);
+    // Parse optional signatures for RPC fallback
+    const specificSignatures = signaturesParam
+      ? signaturesParam.split(',').map(s => s.trim()).filter(s => s.length > 0)
+      : undefined;
 
-    console.log(`[api/helius-swaps] Successfully processed ${activities.length} activities`);
+    if (specificSignatures && specificSignatures.length > 0) {
+      console.log(`[api/helius-swaps] RPC fallback requested for ${specificSignatures.length} signatures`);
+    }
+
+    // Process all transactions for the wallet (with optional RPC fallback)
+    const result = await processAllTransactions(walletAddress, {
+      specificSignatures,
+    });
+
+    console.log(`[api/helius-swaps] Successfully processed ${result.activities.length} activities`);
 
     // Return successful response
     return NextResponse.json(
       {
         success: true,
-        data: activities,
-        total: activities.length,
+        data: result.activities,
+        total: result.activities.length,
         wallet: walletAddress,
-        message: activities.length === 0
+        metadata: {
+          enhancedApiCount: result.metadata.enhancedApiCount,
+          rpcFallbackCount: result.metadata.rpcFallbackCount,
+          totalCount: result.metadata.totalCount,
+        },
+        message: result.activities.length === 0
           ? 'No swap transactions found for this wallet'
-          : `Successfully processed ${activities.length} swap transactions`,
+          : `Successfully processed ${result.activities.length} swap transactions`,
       },
       {
         status: 200,

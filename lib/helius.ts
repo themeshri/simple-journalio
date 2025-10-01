@@ -87,11 +87,14 @@ async function fetchSwapTransactionsPage(
       timeout: REQUEST_TIMEOUT,
     });
 
-    // Filter for transactions that are swaps (type=SWAP) or have token swaps (type=UNKNOWN with 2+ token transfers)
+    // Filter for transactions that are swaps or swap-related types
+    // Includes: SWAP, BUY, SELL, INIT_SWAP, CANCEL_SWAP, REJECT_SWAP
+    // Also includes UNKNOWN types with token transfers (misclassified swaps)
     const allTransactions = response.data || [];
     const swapTransactions = allTransactions.filter(tx => {
-      // Include explicit SWAP types
-      if (tx.type === 'SWAP') {
+      // Include explicit swap-related types
+      const swapTypes = ['SWAP', 'BUY', 'SELL', 'INIT_SWAP', 'CANCEL_SWAP', 'REJECT_SWAP'];
+      if (swapTypes.includes(tx.type)) {
         return true;
       }
 
@@ -253,6 +256,9 @@ export async function fetchAllSwapTransactionsWithRetry(
 /**
  * Validate a Helius transaction has required fields
  *
+ * Note: Accepts swap-related types (SWAP, BUY, SELL, etc.) and UNKNOWN types
+ * (UNKNOWN often contains misclassified swaps)
+ *
  * @param tx - HeliusTransaction to validate
  * @returns true if transaction is valid
  */
@@ -261,7 +267,9 @@ export function isValidHeliusTransaction(tx: HeliusTransaction): boolean {
     return false;
   }
 
-  if (tx.type !== 'SWAP') {
+  // Accept swap-related types and UNKNOWN types (UNKNOWN can be misclassified swaps)
+  const validTypes = ['SWAP', 'BUY', 'SELL', 'INIT_SWAP', 'CANCEL_SWAP', 'REJECT_SWAP', 'UNKNOWN'];
+  if (!validTypes.includes(tx.type)) {
     return false;
   }
 
