@@ -15,7 +15,7 @@ import { getHeliusApiKey } from './config';
 const HELIUS_BASE_URL = 'https://api.helius.xyz/v0';
 const REQUEST_TIMEOUT = 30000; // 30 seconds
 const MAX_RESULTS_PER_PAGE = 100; // Helius max limit
-const MAX_TOTAL_TRANSACTIONS = 10000; // Safety limit to avoid infinite loops
+const MAX_TOTAL_TRANSACTIONS = 50000; // Safety limit to avoid infinite loops (increased for more history)
 
 /**
  * Rate limiting configuration
@@ -59,12 +59,12 @@ async function respectRateLimit(): Promise<void> {
  *
  * @param walletAddress - Solana wallet address
  * @param beforeSignature - Pagination cursor (optional)
- * @returns Array of HeliusTransaction objects
+ * @returns Object with filtered swap transactions, raw transaction count, and last signature for pagination
  */
 async function fetchSwapTransactionsPage(
   walletAddress: string,
   beforeSignature?: string
-): Promise<HeliusTransaction[]> {
+): Promise<{ swapTransactions: HeliusTransaction[]; rawCount: number; lastSignature?: string }> {
   await respectRateLimit();
 
   const apiKey = getHeliusApiKey();
@@ -89,7 +89,7 @@ async function fetchSwapTransactionsPage(
 
     // Filter for transactions that are swaps or swap-related types
     // Includes: SWAP, BUY, SELL, INIT_SWAP, CANCEL_SWAP, REJECT_SWAP
-    // Also includes UNKNOWN types with token transfers (misclassified swaps)
+    // Also includes TRANSFER, UNKNOWN and INTERACT types with token transfers (trading bots, misclassified swaps)
     const allTransactions = response.data || [];
     const swapTransactions = allTransactions.filter(tx => {
       // Include explicit swap-related types
@@ -98,15 +98,30 @@ async function fetchSwapTransactionsPage(
         return true;
       }
 
+      // Include TRANSFER types that have token transfers (trading bots classify swaps as transfers)
+      if (tx.type === 'TRANSFER' && tx.tokenTransfers && tx.tokenTransfers.length >= 2) {
+        return true;
+      }
+
       // Include UNKNOWN types that have token transfers (likely misclassified swaps)
       if (tx.type === 'UNKNOWN' && tx.tokenTransfers && tx.tokenTransfers.length >= 2) {
+        return true;
+      }
+
+      // Include INTERACT types that have token transfers (trading bots like BLUR)
+      if (tx.type === 'INTERACT' && tx.tokenTransfers && tx.tokenTransfers.length >= 2) {
         return true;
       }
 
       return false;
     });
 
-    return swapTransactions;
+    // Get the last signature for pagination (use last transaction from raw API response)
+    const lastSignature = allTransactions.length > 0
+      ? allTransactions[allTransactions.length - 1].signature
+      : undefined;
+
+    return { swapTransactions, rawCount: allTransactions.length, lastSignature };
   } catch (error) {
     const axiosError = error as AxiosError;
 
@@ -163,22 +178,26 @@ export async function fetchAllSwapTransactions(
         `[helius] Fetching page ${pageNumber} (before: ${beforeSignature || 'none'})...`
       );
 
-      const transactions = await fetchSwapTransactionsPage(
+      const { swapTransactions, rawCount, lastSignature } = await fetchSwapTransactionsPage(
         walletAddress,
         beforeSignature
       );
 
-      if (!transactions || transactions.length === 0) {
+      // Stop if no transactions were returned from the API at all
+      if (rawCount === 0) {
         console.log('[helius] No more transactions found');
         hasMore = false;
         break;
       }
 
-      console.log(`[helius] Received ${transactions.length} transactions`);
-      allTransactions.push(...transactions);
+      console.log(
+        `[helius] Received ${swapTransactions.length} swap transactions (${rawCount} total transactions in page)`
+      );
+      allTransactions.push(...swapTransactions);
 
-      // Use last transaction signature as cursor for next page
-      beforeSignature = transactions[transactions.length - 1].signature;
+      // Use the last transaction signature from the raw API response for pagination
+      // This ensures we continue paginating even if a page has 0 swaps
+      beforeSignature = lastSignature;
 
       // Check if we've reached the maximum limit
       if (allTransactions.length >= maxTransactions) {
@@ -189,9 +208,10 @@ export async function fetchAllSwapTransactions(
         break;
       }
 
-      // If we got fewer transactions than the page size, we've reached the end
-      if (transactions.length < MAX_RESULTS_PER_PAGE) {
-        console.log('[helius] Reached end of transactions');
+      // Stop pagination only when the RAW API response has fewer than max per page
+      // This means we've reached the end of the wallet's transaction history
+      if (rawCount < MAX_RESULTS_PER_PAGE) {
+        console.log(`[helius] Reached end of transaction history (page had ${rawCount} transactions)`);
         hasMore = false;
         break;
       }
@@ -256,8 +276,8 @@ export async function fetchAllSwapTransactionsWithRetry(
 /**
  * Validate a Helius transaction has required fields
  *
- * Note: Accepts swap-related types (SWAP, BUY, SELL, etc.) and UNKNOWN types
- * (UNKNOWN often contains misclassified swaps)
+ * Note: Accepts swap-related types (SWAP, BUY, SELL, etc.), TRANSFER types, UNKNOWN types, and INTERACT types
+ * (TRANSFER/UNKNOWN/INTERACT often contains trading bots and misclassified swaps)
  *
  * @param tx - HeliusTransaction to validate
  * @returns true if transaction is valid
@@ -267,8 +287,8 @@ export function isValidHeliusTransaction(tx: HeliusTransaction): boolean {
     return false;
   }
 
-  // Accept swap-related types and UNKNOWN types (UNKNOWN can be misclassified swaps)
-  const validTypes = ['SWAP', 'BUY', 'SELL', 'INIT_SWAP', 'CANCEL_SWAP', 'REJECT_SWAP', 'UNKNOWN'];
+  // Accept swap-related types, TRANSFER types (trading bots), UNKNOWN types, and INTERACT types
+  const validTypes = ['SWAP', 'BUY', 'SELL', 'INIT_SWAP', 'CANCEL_SWAP', 'REJECT_SWAP', 'TRANSFER', 'UNKNOWN', 'INTERACT'];
   if (!validTypes.includes(tx.type)) {
     return false;
   }

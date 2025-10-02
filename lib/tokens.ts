@@ -249,19 +249,49 @@ export async function getBatchTokenMetadata(
   mintAddresses: string[]
 ): Promise<Map<string, TokenMetadata>> {
   const metadataMap = new Map<string, TokenMetadata>();
+  const uncachedMints: string[] = [];
 
-  // Process each mint address using Helius
+  // Separate cached from uncached tokens
   for (const mintAddress of mintAddresses) {
     // Check essential tokens cache first
     if (ESSENTIAL_TOKENS[mintAddress]) {
       metadataMap.set(mintAddress, ESSENTIAL_TOKENS[mintAddress]);
-      continue;
+    } else {
+      uncachedMints.push(mintAddress);
     }
-
-    // Fetch from Helius for non-cached tokens
-    const metadata = await getTokenMetadata(mintAddress);
-    metadataMap.set(mintAddress, metadata);
   }
+
+  // If no uncached tokens, return early
+  if (uncachedMints.length === 0) {
+    return metadataMap;
+  }
+
+  console.log(`[tokens] Fetching metadata for ${uncachedMints.length} tokens in parallel batches`);
+
+  // Process uncached tokens in parallel batches
+  const BATCH_SIZE = 20; // Process 20 tokens at a time to avoid overwhelming API
+
+  for (let i = 0; i < uncachedMints.length; i += BATCH_SIZE) {
+    const batch = uncachedMints.slice(i, i + BATCH_SIZE);
+
+    console.log(`[tokens] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(uncachedMints.length / BATCH_SIZE)} (${batch.length} tokens)`);
+
+    // Fetch all tokens in this batch in parallel
+    const promises = batch.map(mint => getTokenMetadata(mint));
+    const results = await Promise.all(promises);
+
+    // Add results to map
+    results.forEach((metadata, idx) => {
+      metadataMap.set(batch[idx], metadata);
+    });
+
+    // Add small delay between batches to respect rate limits (except for last batch)
+    if (i + BATCH_SIZE < uncachedMints.length) {
+      await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between batches
+    }
+  }
+
+  console.log(`[tokens] Successfully fetched metadata for ${uncachedMints.length} tokens`);
 
   return metadataMap;
 }
